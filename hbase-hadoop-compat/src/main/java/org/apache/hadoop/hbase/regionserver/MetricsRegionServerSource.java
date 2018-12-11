@@ -234,6 +234,7 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String MEMSTORE_SIZE = "memStoreSize";
   String MEMSTORE_SIZE_DESC = "Size of the memstore";
   String STOREFILE_SIZE = "storeFileSize";
+  String STOREFILE_SIZE_GROWTH_RATE = "storeFileSizeGrowthRate";
   String MAX_STORE_FILE_AGE = "maxStoreFileAge";
   String MIN_STORE_FILE_AGE = "minStoreFileAge";
   String AVG_STORE_FILE_AGE = "avgStoreFileAge";
@@ -243,6 +244,8 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String AVG_STORE_FILE_AGE_DESC = "Average age of store files hosted on this RegionServer";
   String NUM_REFERENCE_FILES_DESC = "Number of reference file on this RegionServer";
   String STOREFILE_SIZE_DESC = "Size of storefiles being served.";
+  String STOREFILE_SIZE_GROWTH_RATE_DESC =
+        "Bytes per second by which the size of storefiles being served grows.";
   String TOTAL_REQUEST_COUNT = "totalRequestCount";
   String TOTAL_REQUEST_COUNT_DESC =
       "Total number of requests this RegionServer has answered; increments the count once for " +
@@ -254,6 +257,9 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
           "action at the RPC Server (Sums 'readRequestsCount' and 'writeRequestsCount'); counts" +
           "once per access whether a Put of 1M rows or a Get that returns 1M Results";
   String READ_REQUEST_COUNT = "readRequestCount";
+  String FILTERED_READ_REQUEST_COUNT = "filteredReadRequestCount";
+  String FILTERED_READ_REQUEST_COUNT_DESC =
+      "Number of read requests this region server has answered.";
   String READ_REQUEST_COUNT_DESC =
       "Number of read requests with non-empty Results that this RegionServer has answered.";
   String READ_REQUEST_RATE_PER_SECOND = "readRequestRatePerSecond";
@@ -262,9 +268,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String CP_REQUEST_COUNT = "cpRequestCount";
   String CP_REQUEST_COUNT_DESC =
       "Number of coprocessor service requests this region server has answered.";
-  String FILTERED_READ_REQUEST_COUNT = "filteredReadRequestCount";
-  String FILTERED_READ_REQUEST_COUNT_DESC =
-    "Number of filtered read requests this RegionServer has answered.";
   String WRITE_REQUEST_COUNT = "writeRequestCount";
   String WRITE_REQUEST_COUNT_DESC =
       "Number of mutation requests this RegionServer has answered.";

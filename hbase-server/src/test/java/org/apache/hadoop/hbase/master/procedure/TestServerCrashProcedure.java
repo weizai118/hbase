@@ -20,9 +20,12 @@ package org.apache.hadoop.hbase.master.procedure;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
@@ -52,7 +55,7 @@ public class TestServerCrashProcedure {
 
   private static final Logger LOG = LoggerFactory.getLogger(TestServerCrashProcedure.class);
 
-  private HBaseTestingUtility util;
+  protected HBaseTestingUtility util;
 
   private ProcedureMetrics serverCrashProcMetrics;
   private long serverCrashSubmittedCount = 0;
@@ -61,18 +64,23 @@ public class TestServerCrashProcedure {
   private void setupConf(Configuration conf) {
     conf.setInt(MasterProcedureConstants.MASTER_PROCEDURE_THREADS, 1);
     conf.set("hbase.balancer.tablesOnMaster", "none");
-    conf.setInt("hbase.client.retries.number", 3);
+    conf.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 3);
+    conf.setInt(HConstants.HBASE_CLIENT_SERVERSIDE_RETRIES_MULTIPLIER, 3);
   }
 
   @Before
   public void setup() throws Exception {
     this.util = new HBaseTestingUtility();
     setupConf(this.util.getConfiguration());
-    this.util.startMiniCluster(3);
+    startMiniCluster();
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(
       this.util.getHBaseCluster().getMaster().getMasterProcedureExecutor(), false);
     serverCrashProcMetrics = this.util.getHBaseCluster().getMaster().getMasterMetrics()
         .getServerCrashProcMetrics();
+  }
+
+  protected void startMiniCluster() throws Exception {
+    this.util.startMiniCluster(3);
   }
 
   @After
@@ -113,11 +121,9 @@ public class TestServerCrashProcedure {
    */
   private void testRecoveryAndDoubleExecution(boolean carryingMeta, boolean doubleExecution)
       throws Exception {
-    final TableName tableName = TableName.valueOf(
-      "testRecoveryAndDoubleExecution-carryingMeta-" + carryingMeta);
-    final Table t = this.util.createTable(tableName, HBaseTestingUtility.COLUMNS,
-        HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE);
-    try {
+    final TableName tableName = TableName.valueOf("testRecoveryAndDoubleExecution-carryingMeta-"
+        + carryingMeta + "-doubleExecution-" + doubleExecution);
+    try (Table t = createTable(tableName)) {
       // Load the table with a bit of data so some logs to split and some edits in each region.
       this.util.loadTable(t, HBaseTestingUtility.COLUMNS[0]);
       final int count = util.countRows(t);
@@ -139,6 +145,10 @@ public class TestServerCrashProcedure {
       // Enable test flags and then queue the crash procedure.
       ProcedureTestingUtility.waitNoProcedureRunning(procExec);
       if (doubleExecution) {
+        // For SCP, if you enable this then we will enter an infinite loop, as we will crash between
+        // queue and open for TRSP, and then going back to queue, as we will use the crash rs as the
+        // target server since it is recored in hbase:meta.
+        ProcedureTestingUtility.setKillIfHasParent(procExec, false);
         ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, true);
         // kill the RS
         AssignmentTestingUtil.killRs(util, rsToKill);
@@ -151,15 +161,23 @@ public class TestServerCrashProcedure {
         long procId = getSCPProcId(procExec);
         ProcedureTestingUtility.waitProcedure(procExec, procId);
       }
-      // Assert all data came back.
+      assertReplicaDistributed(t);
       assertEquals(count, util.countRows(t));
       assertEquals(checksum, util.checksumRows(t));
-    } catch(Throwable throwable) {
+    } catch (Throwable throwable) {
       LOG.error("Test failed!", throwable);
       throw throwable;
-    } finally {
-      t.close();
     }
+  }
+
+  protected void assertReplicaDistributed(final Table t) {
+    return;
+  }
+
+  protected Table createTable(final TableName tableName) throws IOException {
+    final Table t = this.util.createTable(tableName, HBaseTestingUtility.COLUMNS,
+        HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE);
+    return t;
   }
 
   private void collectMasterMetrics() {

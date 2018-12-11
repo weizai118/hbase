@@ -48,10 +48,12 @@ import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.UnknownRegionException;
 import org.apache.hadoop.hbase.ZooKeeperConnectionException;
 import org.apache.hadoop.hbase.constraint.ConstraintException;
+import org.apache.hadoop.hbase.ipc.HBaseRpcController;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
+import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -59,6 +61,7 @@ import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.junit.After;
 import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -710,12 +713,12 @@ public class TestAdmin2 {
     assertEquals(3, clusterRegionServers.size());
 
     HashMap<ServerName, List<RegionInfo>> serversToDecommssion = new HashMap<>();
-    // Get a server that has regions. We will decommission two of the servers,
+    // Get a server that has meta online. We will decommission two of the servers,
     // leaving one online.
     int i;
     for (i = 0; i < clusterRegionServers.size(); i++) {
       List<RegionInfo> regionsOnServer = admin.getRegions(clusterRegionServers.get(i));
-      if (regionsOnServer.size() > 0) {
+      if (admin.getRegions(clusterRegionServers.get(i)).stream().anyMatch(p -> p.isMetaRegion())) {
         serversToDecommssion.put(clusterRegionServers.get(i), regionsOnServer);
         break;
       }
@@ -752,6 +755,42 @@ public class TestAdmin2 {
       for (RegionInfo region : serversToDecommssion.get(server)) {
         TEST_UTIL.assertRegionOnServer(region, server, 10000);
       }
+    }
+  }
+
+  /**
+   * TestCase for HBASE-21355
+   */
+  @Test
+  public void testGetRegionInfo() throws Exception {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
+    Table table = TEST_UTIL.createTable(tableName, Bytes.toBytes("f"));
+    for (int i = 0; i < 100; i++) {
+      table.put(new Put(Bytes.toBytes(i)).addColumn(Bytes.toBytes("f"), Bytes.toBytes("q"),
+        Bytes.toBytes(i)));
+    }
+    admin.flush(tableName);
+
+    HRegionServer rs = TEST_UTIL.getRSForFirstRegionInTable(table.getName());
+    List<HRegion> regions = rs.getRegions(tableName);
+    Assert.assertEquals(1, regions.size());
+
+    HRegion region = regions.get(0);
+    byte[] regionName = region.getRegionInfo().getRegionName();
+    HStore store = region.getStore(Bytes.toBytes("f"));
+    long expectedStoreFilesSize = store.getStorefilesSize();
+    Assert.assertNotNull(store);
+    Assert.assertEquals(expectedStoreFilesSize, store.getSize());
+
+    ClusterConnection conn = ((ClusterConnection) admin.getConnection());
+    HBaseRpcController controller = conn.getRpcControllerFactory().newController();
+    for (int i = 0; i < 10; i++) {
+      RegionInfo ri =
+          ProtobufUtil.getRegionInfo(controller, conn.getAdmin(rs.getServerName()), regionName);
+      Assert.assertEquals(region.getRegionInfo(), ri);
+
+      // Make sure that the store size is still the actual file system's store size.
+      Assert.assertEquals(expectedStoreFilesSize, store.getSize());
     }
   }
 }

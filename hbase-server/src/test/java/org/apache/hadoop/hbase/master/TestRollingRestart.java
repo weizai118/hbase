@@ -30,6 +30,7 @@ import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionLocator;
@@ -78,7 +79,9 @@ public class TestRollingRestart {
     log("Starting cluster");
     Configuration conf = HBaseConfiguration.create();
     HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility(conf);
-    TEST_UTIL.startMiniCluster(NUM_MASTERS, NUM_RS);
+    StartMiniClusterOption option = StartMiniClusterOption.builder()
+        .numMasters(NUM_MASTERS).numRegionServers(NUM_RS).numDataNodes(NUM_RS).build();
+    TEST_UTIL.startMiniCluster(option);
     MiniHBaseCluster cluster = TEST_UTIL.getHBaseCluster();
     log("Waiting for active/ready master");
     cluster.waitForActiveAndReadyMaster();
@@ -100,11 +103,13 @@ public class TestRollingRestart {
     log("Waiting for no more RIT\n");
     TEST_UTIL.waitUntilNoRegionsInTransition(60000);
     NavigableSet<String> regions = HBaseTestingUtility.getAllOnlineRegions(cluster);
-    log("Verifying only catalog and namespace regions are assigned\n");
-    if (regions.size() != 2) {
-      for (String oregion : regions) log("Region still online: " + oregion);
+    log("Verifying only catalog region is assigned\n");
+    if (regions.size() != 1) {
+      for (String oregion : regions) {
+        log("Region still online: " + oregion);
+      }
     }
-    assertEquals(2, regions.size());
+    assertEquals(1, regions.size());
     log("Enabling table\n");
     TEST_UTIL.getAdmin().enableTable(tableName);
     log("Waiting for no more RIT\n");

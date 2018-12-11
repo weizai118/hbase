@@ -112,9 +112,10 @@ public class TestRegionServerMetrics {
     // testMobMetrics creates few hfiles and manages compaction manually.
     conf.setInt("hbase.hstore.compactionThreshold", 100);
     conf.setInt("hbase.hstore.compaction.max", 100);
+    conf.setInt("hbase.regionserver.periodicmemstoreflusher.rangeofdelayseconds", 4*60);
     conf.setInt(HConstants.REGIONSERVER_INFO_PORT, -1);
 
-    TEST_UTIL.startMiniCluster(1, 1);
+    TEST_UTIL.startMiniCluster();
     cluster = TEST_UTIL.getHBaseCluster();
     cluster.waitForActiveAndReadyMaster();
     admin = TEST_UTIL.getAdmin();
@@ -238,7 +239,7 @@ public class TestRegionServerMetrics {
 
   @Test
   public void testRegionCount() throws Exception {
-    metricsHelper.assertGauge("regionCount", TABLES_ON_MASTER? 1: 3, serverSource);
+    metricsHelper.assertGauge("regionCount", TABLES_ON_MASTER ? 1 : 2, serverSource);
   }
 
   @Test

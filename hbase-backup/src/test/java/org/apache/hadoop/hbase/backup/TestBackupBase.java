@@ -57,11 +57,14 @@ import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.master.cleaner.LogCleaner;
+import org.apache.hadoop.hbase.master.cleaner.TimeToLiveLogCleaner;
 import org.apache.hadoop.hbase.security.HadoopSecurityEnabledUserProviderForTesting;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.access.SecureTestUtil;
 import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.wal.WALFactory;
 import org.junit.AfterClass;
@@ -288,6 +291,11 @@ public class TestBackupBase {
     BackupManager.decorateMasterConfiguration(conf1);
     BackupManager.decorateRegionServerConfiguration(conf1);
     conf1.set(HConstants.ZOOKEEPER_ZNODE_PARENT, "/1");
+    // Set TTL for old WALs to 1 sec to enforce fast cleaning of an archived
+    // WAL files
+    conf1.setLong(TimeToLiveLogCleaner.TTL_CONF_KEY, 1000);
+    conf1.setLong(LogCleaner.OLD_WALS_CLEANER_THREAD_TIMEOUT_MSEC, 1000);
+
     // Set MultiWAL (with 2 default WAL files per RS)
     conf1.set(WALFactory.WAL_PROVIDER, provider);
     TEST_UTIL.startMiniCluster();
@@ -297,6 +305,10 @@ public class TestBackupBase {
       conf2.set(HConstants.ZOOKEEPER_ZNODE_PARENT, "/2");
       TEST_UTIL2 = new HBaseTestingUtility(conf2);
       TEST_UTIL2.setZkCluster(TEST_UTIL.getZkCluster());
+      TEST_UTIL2.startMiniDFSCluster(3);
+      String root2 = TEST_UTIL2.getConfiguration().get("fs.defaultFS");
+      Path p = new Path(new Path(root2), "/tmp/wal");
+      CommonFSUtils.setWALRootDir(TEST_UTIL2.getConfiguration(), p);
       TEST_UTIL2.startMiniCluster();
     }
     conf1 = TEST_UTIL.getConfiguration();

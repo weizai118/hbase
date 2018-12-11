@@ -181,7 +181,7 @@ public class TestWALFactory {
     final MultiVersionConcurrencyControl mvcc = new MultiVersionConcurrencyControl(1);
     final int howmany = 3;
     RegionInfo[] infos = new RegionInfo[3];
-    Path tabledir = FSUtils.getTableDir(hbaseDir, tableName);
+    Path tabledir = FSUtils.getWALTableDir(conf, tableName);
     fs.mkdirs(tabledir);
     for (int i = 0; i < howmany; i++) {
       infos[i] = RegionInfoBuilder.newBuilder(tableName).setStartKey(Bytes.toBytes("" + i))
@@ -741,5 +741,29 @@ public class TestWALFactory {
     Class<? extends WALProvider> multiwalProviderClass = customizedWalFactory.getProviderClass(
         WALFactory.WAL_PROVIDER, Providers.multiwal.name());
     assertEquals(Providers.multiwal.clazz, multiwalProviderClass);
+  }
+
+  @Test
+  public void testCustomProvider() throws IOException {
+    final Configuration config = new Configuration();
+    config.set(WALFactory.WAL_PROVIDER, IOTestProvider.class.getName());
+    final WALFactory walFactory = new WALFactory(config, this.currentServername.toString());
+    Class<? extends WALProvider> walProvider = walFactory.getProviderClass(
+        WALFactory.WAL_PROVIDER, Providers.filesystem.name());
+    assertEquals(IOTestProvider.class, walProvider);
+    WALProvider metaWALProvider = walFactory.getMetaProvider();
+    assertEquals(IOTestProvider.class, metaWALProvider.getClass());
+  }
+
+  @Test
+  public void testCustomMetaProvider() throws IOException {
+    final Configuration config = new Configuration();
+    config.set(WALFactory.META_WAL_PROVIDER, IOTestProvider.class.getName());
+    final WALFactory walFactory = new WALFactory(config, this.currentServername.toString());
+    Class<? extends WALProvider> walProvider = walFactory.getProviderClass(
+        WALFactory.WAL_PROVIDER, Providers.filesystem.name());
+    assertEquals(Providers.filesystem.clazz, walProvider);
+    WALProvider metaWALProvider = walFactory.getMetaProvider();
+    assertEquals(IOTestProvider.class, metaWALProvider.getClass());
   }
 }

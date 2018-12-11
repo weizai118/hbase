@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
+import static org.apache.hadoop.hbase.regionserver.HStoreFile.BLOOM_FILTER_PARAM_KEY;
 import static org.apache.hadoop.hbase.regionserver.HStoreFile.BLOOM_FILTER_TYPE_KEY;
 import static org.apache.hadoop.hbase.regionserver.HStoreFile.DELETE_FAMILY_COUNT;
 import static org.apache.hadoop.hbase.regionserver.HStoreFile.LAST_BLOOM_KEY;
@@ -74,6 +75,8 @@ public class StoreFileReader {
   private boolean bulkLoadResult = false;
   private KeyValue.KeyOnlyKeyValue lastBloomKeyOnlyKV = null;
   private boolean skipResetSeqId = true;
+  private int prefixLength = -1;
+  private byte[] delimiter = null;
 
   // Counter that is incremented every time a scanner is created on the
   // store file. It is decremented when the scan on the store file is
@@ -84,6 +87,10 @@ public class StoreFileReader {
   // close the internal reader when readCompleted is called.
   @VisibleForTesting
   final boolean shared;
+
+  private volatile Listener listener;
+
+  private boolean closed = false;
 
   private StoreFileReader(HFile.Reader reader, AtomicInteger refCount, boolean shared) {
     this.reader = reader;
@@ -115,6 +122,8 @@ public class StoreFileReader {
     this.bulkLoadResult = reader.bulkLoadResult;
     this.lastBloomKeyOnlyKV = reader.lastBloomKeyOnlyKV;
     this.skipResetSeqId = reader.skipResetSeqId;
+    this.prefixLength = reader.prefixLength;
+    this.delimiter = reader.delimiter;
   }
 
   public boolean isPrimaryReplicaReader() {
@@ -153,6 +162,14 @@ public class StoreFileReader {
   }
 
   /**
+   * Return the ref count associated with the reader whenever a scanner associated with the
+   * reader is opened.
+   */
+  int getRefCount() {
+    return refCount.get();
+  }
+
+  /**
    * Indicate that the scanner has started reading with this reader. We need to increment the ref
    * count so reader is not close until some object is holding the lock
    */
@@ -169,6 +186,9 @@ public class StoreFileReader {
     if (!shared) {
       try {
         reader.close(false);
+        if (this.listener != null) {
+          this.listener.storeFileReaderClosed(this);
+        }
       } catch (IOException e) {
         LOG.warn("failed to close stream reader", e);
       }
@@ -209,13 +229,22 @@ public class StoreFileReader {
   }
 
   public void close(boolean evictOnClose) throws IOException {
-    reader.close(evictOnClose);
+    synchronized (this) {
+      if (closed) {
+        return;
+      }
+      reader.close(evictOnClose);
+      closed = true;
+    }
+    if (listener != null) {
+      listener.storeFileReaderClosed(this);
+    }
   }
 
   /**
    * Check if this storeFile may contain keys within the TimeRange that
    * have not expired (i.e. not older than oldestUnexpiredTS).
-   * @param timeRange the timeRange to restrict
+   * @param tr the timeRange to restrict
    * @param oldestUnexpiredTS the oldest timestamp that is not expired, as
    *          determined by the column family's TTL
    * @return false if queried keys definitely don't exist in this StoreFile
@@ -242,18 +271,18 @@ public class StoreFileReader {
    *         False if the Bloom filter is applicable and the scan fails it.
    */
   boolean passesBloomFilter(Scan scan, final SortedSet<byte[]> columns) {
-    // Multi-column non-get scans will use Bloom filters through the
-    // lower-level API function that this function calls.
-    if (!scan.isGetScan()) {
-      return true;
-    }
-
     byte[] row = scan.getStartRow();
     switch (this.bloomFilterType) {
       case ROW:
+        if (!scan.isGetScan()) {
+          return true;
+        }
         return passesGeneralRowBloomFilter(row, 0, row.length);
 
       case ROWCOL:
+        if (!scan.isGetScan()) {
+          return true;
+        }
         if (columns != null && columns.size() == 1) {
           byte[] column = columns.first();
           // create the required fake key
@@ -264,7 +293,10 @@ public class StoreFileReader {
         // For multi-column queries the Bloom filter is checked from the
         // seekExact operation.
         return true;
-
+      case ROWPREFIX_FIXED_LENGTH:
+        return passesGeneralRowPrefixBloomFilter(scan);
+      case ROWPREFIX_DELIMITED:
+        return passesGeneralDelimitedRowPrefixBloomFilter(scan);
       default:
         return true;
     }
@@ -305,7 +337,7 @@ public class StoreFileReader {
    *
    * @return True if passes
    */
-  public boolean passesGeneralRowBloomFilter(byte[] row, int rowOffset, int rowLen) {
+  private boolean passesGeneralRowBloomFilter(byte[] row, int rowOffset, int rowLen) {
     BloomFilter bloomFilter = this.generalBloomFilter;
     if (bloomFilter == null) {
       return true;
@@ -315,7 +347,7 @@ public class StoreFileReader {
     byte[] key = null;
     if (rowOffset != 0 || rowLen != row.length) {
       throw new AssertionError(
-          "For row-only Bloom filters the row " + "must occupy the whole array");
+          "For row-only Bloom filters the row must occupy the whole array");
     }
     key = row;
     return checkGeneralBloomFilter(key, null, bloomFilter);
@@ -343,6 +375,76 @@ public class StoreFileReader {
       kvKey = PrivateCellUtil.createFirstOnRowCol(cell);
     }
     return checkGeneralBloomFilter(null, kvKey, bloomFilter);
+  }
+
+  /**
+   * A method for checking Bloom filters. Called directly from
+   * StoreFileScanner in case of a multi-column query.
+   *
+   * @return True if passes
+   */
+  private boolean passesGeneralRowPrefixBloomFilter(Scan scan) {
+    BloomFilter bloomFilter = this.generalBloomFilter;
+    if (bloomFilter == null) {
+      return true;
+    }
+
+    byte[] row = scan.getStartRow();
+    byte[] rowPrefix;
+    if (scan.isGetScan()) {
+      rowPrefix = Bytes.copy(row, 0, Math.min(prefixLength, row.length));
+    } else {
+      // For non-get scans
+      // Find out the common prefix of startRow and stopRow.
+      int commonLength = Bytes.findCommonPrefix(scan.getStartRow(), scan.getStopRow(),
+          scan.getStartRow().length, scan.getStopRow().length, 0, 0);
+      // startRow and stopRow don't have the common prefix.
+      // Or the common prefix length is less than prefixLength
+      if (commonLength <= 0 || commonLength < prefixLength) {
+        return true;
+      }
+      rowPrefix = Bytes.copy(row, 0, prefixLength);
+    }
+    return checkGeneralBloomFilter(rowPrefix, null, bloomFilter);
+  }
+
+  /**
+   * A method for checking Bloom filters. Called directly from
+   * StoreFileScanner in case of a multi-column query.
+   *
+   * @return True if passes
+   */
+  private boolean passesGeneralDelimitedRowPrefixBloomFilter(Scan scan) {
+    BloomFilter bloomFilter = this.generalBloomFilter;
+    if (bloomFilter == null) {
+      return true;
+    }
+
+    byte[] row = scan.getStartRow();
+    byte[] rowPrefix;
+    if (scan.isGetScan()) {
+      int rowPrefixLength = Bytes.indexOf(row, delimiter);
+      if (rowPrefixLength <= 0) {
+        rowPrefix = row;
+      } else {
+        rowPrefix = Bytes.copy(row, 0, rowPrefixLength);
+      }
+    } else {
+      // For non-get scans
+      // If startRow does not contain delimiter, return true directly.
+      int startRowPrefixLength = Bytes.indexOf(row, delimiter);
+      if (startRowPrefixLength <= 0) {
+        return true;
+      }
+      // If stopRow does not have the same prefix as startRow, return true directly.
+      int commonLength = Bytes.findCommonPrefix(scan.getStartRow(), scan.getStopRow(),
+          startRowPrefixLength, scan.getStopRow().length, 0, 0);
+      if (commonLength < startRowPrefixLength) {
+        return true;
+      }
+      rowPrefix = Bytes.copy(row, 0, startRowPrefixLength);
+    }
+    return checkGeneralBloomFilter(rowPrefix, null, bloomFilter);
   }
 
   private boolean checkGeneralBloomFilter(byte[] key, Cell kvKey, BloomFilter bloomFilter) {
@@ -373,10 +475,10 @@ public class StoreFileReader {
         // hbase:meta does not have blooms. So we need not have special interpretation
         // of the hbase:meta cells.  We can safely use Bytes.BYTES_RAWCOMPARATOR for ROW Bloom
         if (keyIsAfterLast) {
-          if (bloomFilterType == BloomType.ROW) {
-            keyIsAfterLast = (Bytes.BYTES_RAWCOMPARATOR.compare(key, lastBloomKey) > 0);
-          } else {
+          if (bloomFilterType == BloomType.ROWCOL) {
             keyIsAfterLast = (CellComparator.getInstance().compare(kvKey, lastBloomKeyOnlyKV)) > 0;
+          } else {
+            keyIsAfterLast = (Bytes.BYTES_RAWCOMPARATOR.compare(key, lastBloomKey) > 0);
           }
         }
 
@@ -450,6 +552,13 @@ public class StoreFileReader {
     byte[] b = fi.get(BLOOM_FILTER_TYPE_KEY);
     if (b != null) {
       bloomFilterType = BloomType.valueOf(Bytes.toString(b));
+    }
+
+    byte[] p = fi.get(BLOOM_FILTER_PARAM_KEY);
+    if (bloomFilterType ==  BloomType.ROWPREFIX_FIXED_LENGTH) {
+      prefixLength = Bytes.toInt(p);
+    } else if (bloomFilterType == BloomType.ROWPREFIX_DELIMITED) {
+      delimiter = p;
     }
 
     lastBloomKey = fi.get(LAST_BLOOM_KEY);
@@ -643,5 +752,22 @@ public class StoreFileReader {
 
   void setSkipResetSeqId(boolean skipResetSeqId) {
     this.skipResetSeqId = skipResetSeqId;
+  }
+
+  public void setListener(Listener listener) {
+    this.listener = listener;
+  }
+
+  public interface Listener {
+    void storeFileReaderClosed(StoreFileReader reader);
+  }
+
+
+  public int getPrefixLength() {
+    return prefixLength;
+  }
+
+  public byte[] getDelimiter() {
+    return delimiter;
   }
 }

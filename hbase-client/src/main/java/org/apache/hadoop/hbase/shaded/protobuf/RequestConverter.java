@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.hbase.CellScannable;
 import org.apache.hadoop.hbase.ClusterMetrics.Option;
@@ -50,6 +51,7 @@ import org.apache.hadoop.hbase.client.Row;
 import org.apache.hadoop.hbase.client.RowMutations;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.client.replication.ReplicationPeerConfigUtil;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.filter.ByteArrayComparable;
@@ -134,6 +136,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetBalance
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetCleanerChoreRunningRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetNormalizerRunningRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetSplitOrMergeEnabledRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetTableStateInMetaRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SplitTableRegionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.TruncateTableRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.UnassignRegionRequest;
@@ -1445,6 +1448,16 @@ public final class RequestConverter {
   }
 
   /**
+   * Creates a protocol buffer SetTableStateInMetaRequest
+   * @param state table state to update in Meta
+   * @return a SetTableStateInMetaRequest
+   */
+  public static SetTableStateInMetaRequest buildSetTableStateInMetaRequest(final TableState state) {
+    return SetTableStateInMetaRequest.newBuilder().setTableState(state.convert())
+        .setTableName(ProtobufUtil.toProtoTableName(state.getTableName())).build();
+  }
+
+  /**
    * Creates a protocol buffer GetTableDescriptorsRequest for a single table
    *
    * @param tableName the table name
@@ -1875,5 +1888,35 @@ public final class RequestConverter {
           SyncReplicationState state) {
     return TransitReplicationPeerSyncReplicationStateRequest.newBuilder().setPeerId(peerId)
         .setSyncReplicationState(ReplicationPeerConfigUtil.toSyncReplicationState(state)).build();
+  }
+
+  // HBCK2
+  public static MasterProtos.AssignsRequest toAssignRegionsRequest(
+      List<String> encodedRegionNames, boolean override) {
+    MasterProtos.AssignsRequest.Builder b = MasterProtos.AssignsRequest.newBuilder();
+    return b.addAllRegion(toEncodedRegionNameRegionSpecifiers(encodedRegionNames)).
+        setOverride(override).build();
+  }
+
+  public static MasterProtos.UnassignsRequest toUnassignRegionsRequest(
+      List<String> encodedRegionNames, boolean override) {
+    MasterProtos.UnassignsRequest.Builder b =
+        MasterProtos.UnassignsRequest.newBuilder();
+    return b.addAllRegion(toEncodedRegionNameRegionSpecifiers(encodedRegionNames)).
+        setOverride(override).build();
+  }
+
+  public static MasterProtos.ScheduleServerCrashProcedureRequest
+      toScheduleServerCrashProcedureRequest(List<HBaseProtos.ServerName> serverNames) {
+    MasterProtos.ScheduleServerCrashProcedureRequest.Builder b =
+        MasterProtos.ScheduleServerCrashProcedureRequest.newBuilder();
+    return b.addAllServerName(serverNames).build();
+  }
+
+  private static List<RegionSpecifier> toEncodedRegionNameRegionSpecifiers(
+      List<String> encodedRegionNames) {
+    return encodedRegionNames.stream().
+        map(r -> buildRegionSpecifier(RegionSpecifierType.ENCODED_REGION_NAME, Bytes.toBytes(r))).
+        collect(Collectors.toList());
   }
 }

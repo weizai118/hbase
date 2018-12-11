@@ -70,6 +70,21 @@ import org.apache.yetus.audience.InterfaceStability;
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.COPROC)
 @InterfaceStability.Evolving
 public interface MasterObserver {
+
+  /**
+   * Called before we create the region infos for this table. Called as part of create table RPC
+   * call.
+   * @param ctx the environment to interact with the framework and master
+   * @param desc the TableDescriptor for the table
+   * @return the TableDescriptor used to create the table. Default is the one passed in. Return
+   *         {@code null} means cancel the creation.
+   */
+  default TableDescriptor preCreateTableRegionsInfos(
+      final ObserverContext<MasterCoprocessorEnvironment> ctx, TableDescriptor desc)
+      throws IOException {
+    return desc;
+  }
+
   /**
    * Called before a new table is created by
    * {@link org.apache.hadoop.hbase.master.HMaster}.  Called as part of create
@@ -225,11 +240,13 @@ public interface MasterObserver {
    * @param currentDescriptor current TableDescriptor of the table
    * @param newDescriptor after modify operation, table will have this descriptor
    */
-  default void preModifyTable(final ObserverContext<MasterCoprocessorEnvironment> ctx,
+  default TableDescriptor preModifyTable(final ObserverContext<MasterCoprocessorEnvironment> ctx,
       final TableName tableName, TableDescriptor currentDescriptor, TableDescriptor newDescriptor)
-    throws IOException {
+      throws IOException {
     preModifyTable(ctx, tableName, newDescriptor);
+    return newDescriptor;
   }
+
   /**
    * Called after the modifyTable operation has been requested.  Called as part
    * of modify table RPC call.

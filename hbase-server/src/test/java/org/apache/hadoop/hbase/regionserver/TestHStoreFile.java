@@ -748,7 +748,7 @@ public class TestHStoreFile extends HBaseTestCase {
       reader.loadFileInfo();
       reader.loadBloomfilter();
       StoreFileScanner scanner = getStoreFileScanner(reader, false, false);
-      assertEquals(expKeys[x], reader.generalBloomFilter.getKeyCount());
+      assertEquals(expKeys[x], reader.getGeneralBloomFilter().getKeyCount());
 
       HStore store = mock(HStore.class);
       when(store.getColumnFamilyDescriptor())
@@ -924,7 +924,6 @@ public class TestHStoreFile extends HBaseTestCase {
     scan.setTimeRange(27, 50);
     scan.setColumnFamilyTimeRange(family, 7, 50);
     assertTrue(scanner.shouldUseScanner(scan, store, Long.MIN_VALUE));
-
   }
 
   @Test
@@ -935,6 +934,7 @@ public class TestHStoreFile extends HBaseTestCase {
     Path baseDir = new Path(new Path(testDir, "7e0102"),"twoCOWEOC");
 
     // Grab the block cache and get the initial hit/miss counts
+    CacheConfig.instantiateBlockCache(conf);
     BlockCache bc = new CacheConfig(conf).getBlockCache();
     assertNotNull(bc);
     CacheStats cs = bc.getStats();

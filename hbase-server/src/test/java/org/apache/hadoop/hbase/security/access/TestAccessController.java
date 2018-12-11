@@ -155,6 +155,7 @@ public class TestAccessController extends SecureTestUtil {
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestAccessController.class);
 
+  private static final FsPermission FS_PERMISSION_ALL = FsPermission.valueOf("-rwxrwxrwx");
   private static final Logger LOG = LoggerFactory.getLogger(TestAccessController.class);
   private static TableName TEST_TABLE = TableName.valueOf("testtable1");
   private static final HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
@@ -273,7 +274,7 @@ public class TestAccessController extends SecureTestUtil {
   public static void tearDownAfterClass() throws Exception {
     cleanUp();
     TEST_UTIL.shutdownMiniCluster();
-    int total = TableAuthManager.getTotalRefCount();
+    int total = AuthManager.getTotalRefCount();
     assertTrue("Unexpected reference count: " + total, total == 0);
   }
 
@@ -983,7 +984,7 @@ public class TestAccessController extends SecureTestUtil {
       fs.mkdirs(dir);
       // need to make it globally writable
       // so users creating HFiles have write permissions
-      fs.setPermission(dir, FsPermission.valueOf("-rwxrwxrwx"));
+      fs.setPermission(dir, FS_PERMISSION_ALL);
 
       AccessTestAction bulkLoadAction = new AccessTestAction() {
         @Override
@@ -994,9 +995,8 @@ public class TestAccessController extends SecureTestUtil {
           byte[][][] hfileRanges = { { { (byte) 0 }, { (byte) 9 } } };
 
           Path bulkLoadBasePath = new Path(dir, new Path(User.getCurrent().getName()));
-          new BulkLoadHelper(bulkLoadBasePath).bulkLoadHFile(TEST_TABLE, TEST_FAMILY,
-            TEST_QUALIFIER, hfileRanges, numRows);
-
+          new BulkLoadHelper(bulkLoadBasePath).initHFileData(TEST_FAMILY, TEST_QUALIFIER,
+            hfileRanges, numRows, FS_PERMISSION_ALL).bulkLoadHFile(TEST_TABLE);
           return null;
         }
       };
@@ -1014,6 +1014,51 @@ public class TestAccessController extends SecureTestUtil {
     }
   }
 
+  private class BulkLoadAccessTestAction implements AccessTestAction {
+    private FsPermission filePermission;
+    private Path testDataDir;
+
+    public BulkLoadAccessTestAction(FsPermission perm, Path testDataDir) {
+      this.filePermission = perm;
+      this.testDataDir = testDataDir;
+    }
+
+    @Override
+    public Object run() throws Exception {
+      FileSystem fs = TEST_UTIL.getTestFileSystem();
+      fs.mkdirs(testDataDir);
+      fs.setPermission(testDataDir, FS_PERMISSION_ALL);
+      // Making the assumption that the test table won't split between the range
+      byte[][][] hfileRanges = { { { (byte) 0 }, { (byte) 9 } } };
+      Path bulkLoadBasePath = new Path(testDataDir, new Path(User.getCurrent().getName()));
+      new BulkLoadHelper(bulkLoadBasePath)
+          .initHFileData(TEST_FAMILY, TEST_QUALIFIER, hfileRanges, 3, filePermission)
+          .bulkLoadHFile(TEST_TABLE);
+      return null;
+    }
+  }
+
+  @Test
+  public void testBulkLoadWithoutWritePermission() throws Exception {
+    // Use the USER_CREATE to initialize the source directory.
+    Path testDataDir0 = TEST_UTIL.getDataTestDirOnTestFS("testBulkLoadWithoutWritePermission0");
+    Path testDataDir1 = TEST_UTIL.getDataTestDirOnTestFS("testBulkLoadWithoutWritePermission1");
+    AccessTestAction bulkLoadAction1 =
+        new BulkLoadAccessTestAction(FsPermission.valueOf("-r-xr-xr-x"), testDataDir0);
+    AccessTestAction bulkLoadAction2 =
+        new BulkLoadAccessTestAction(FS_PERMISSION_ALL, testDataDir1);
+    // Test the incorrect case.
+    BulkLoadHelper.setPermission(TEST_UTIL.getTestFileSystem(),
+      TEST_UTIL.getTestFileSystem().getWorkingDirectory(), FS_PERMISSION_ALL);
+    try {
+      USER_CREATE.runAs(bulkLoadAction1);
+      fail("Should fail because the hbase user has no write permission on hfiles.");
+    } catch (IOException e) {
+    }
+    // Ensure the correct case.
+    USER_CREATE.runAs(bulkLoadAction2);
+  }
+
   public static class BulkLoadHelper {
     private final FileSystem fs;
     private final Path loadPath;
@@ -1029,64 +1074,65 @@ public class TestAccessController extends SecureTestUtil {
     private void createHFile(Path path,
         byte[] family, byte[] qualifier,
         byte[] startKey, byte[] endKey, int numRows) throws IOException {
-
       HFile.Writer writer = null;
       long now = System.currentTimeMillis();
       try {
         HFileContext context = new HFileContextBuilder().build();
-        writer = HFile.getWriterFactory(conf, new CacheConfig(conf))
-            .withPath(fs, path)
-            .withFileContext(context)
-            .create();
+        writer = HFile.getWriterFactory(conf, new CacheConfig(conf)).withPath(fs, path)
+            .withFileContext(context).create();
         // subtract 2 since numRows doesn't include boundary keys
-        for (byte[] key : Bytes.iterateOnSplits(startKey, endKey, true, numRows-2)) {
+        for (byte[] key : Bytes.iterateOnSplits(startKey, endKey, true, numRows - 2)) {
           KeyValue kv = new KeyValue(key, family, qualifier, now, key);
           writer.append(kv);
         }
       } finally {
-        if(writer != null)
+        if (writer != null) {
           writer.close();
+        }
       }
     }
 
-    private void bulkLoadHFile(
-        TableName tableName,
-        byte[] family,
-        byte[] qualifier,
-        byte[][][] hfileRanges,
-        int numRowsPerRange) throws Exception {
-
+    private BulkLoadHelper initHFileData(byte[] family, byte[] qualifier, byte[][][] hfileRanges,
+        int numRowsPerRange, FsPermission filePermission) throws Exception {
       Path familyDir = new Path(loadPath, Bytes.toString(family));
       fs.mkdirs(familyDir);
       int hfileIdx = 0;
+      List<Path> hfiles = new ArrayList<>();
       for (byte[][] range : hfileRanges) {
         byte[] from = range[0];
         byte[] to = range[1];
-        createHFile(new Path(familyDir, "hfile_"+(hfileIdx++)),
-            family, qualifier, from, to, numRowsPerRange);
+        Path hfile = new Path(familyDir, "hfile_" + (hfileIdx++));
+        hfiles.add(hfile);
+        createHFile(hfile, family, qualifier, from, to, numRowsPerRange);
       }
-      //set global read so RegionServer can move it
-      setPermission(loadPath, FsPermission.valueOf("-rwxrwxrwx"));
+      // set global read so RegionServer can move it
+      setPermission(fs, loadPath, FS_PERMISSION_ALL);
+      // Ensure the file permission as requested.
+      for (Path hfile : hfiles) {
+        setPermission(fs, hfile, filePermission);
+      }
+      return this;
+    }
 
-
+    private void bulkLoadHFile(TableName tableName) throws Exception {
       try (Connection conn = ConnectionFactory.createConnection(conf);
-           Admin admin = conn.getAdmin();
-           RegionLocator locator = conn.getRegionLocator(tableName);
-           Table table = conn.getTable(tableName)) {
+          Admin admin = conn.getAdmin();
+          RegionLocator locator = conn.getRegionLocator(tableName);
+          Table table = conn.getTable(tableName)) {
         TEST_UTIL.waitUntilAllRegionsAssigned(tableName);
         LoadIncrementalHFiles loader = new LoadIncrementalHFiles(conf);
         loader.doBulkLoad(loadPath, admin, table, locator);
       }
     }
 
-    public void setPermission(Path dir, FsPermission perm) throws IOException {
-      if(!fs.getFileStatus(dir).isDirectory()) {
-        fs.setPermission(dir,perm);
-      }
-      else {
-        for(FileStatus el : fs.listStatus(dir)) {
+    private static void setPermission(FileSystem fs, Path dir, FsPermission perm)
+        throws IOException {
+      if (!fs.getFileStatus(dir).isDirectory()) {
+        fs.setPermission(dir, perm);
+      } else {
+        for (FileStatus el : fs.listStatus(dir)) {
           fs.setPermission(el.getPath(), perm);
-          setPermission(el.getPath() , perm);
+          setPermission(fs, el.getPath(), perm);
         }
       }
     }
@@ -1588,12 +1634,12 @@ public class TestAccessController extends SecureTestUtil {
       }
 
       UserPermission ownerperm =
-          new UserPermission(Bytes.toBytes(USER_OWNER.getName()), tableName, null, Action.values());
+          new UserPermission(USER_OWNER.getName(), tableName, Action.values());
       assertTrue("Owner should have all permissions on table",
         hasFoundUserPermission(ownerperm, perms));
 
       User user = User.createUserForTesting(TEST_UTIL.getConfiguration(), "user", new String[0]);
-      byte[] userName = Bytes.toBytes(user.getShortName());
+      String userName = user.getShortName();
 
       UserPermission up =
           new UserPermission(userName, tableName, family1, qualifier, Permission.Action.READ);
@@ -1679,7 +1725,7 @@ public class TestAccessController extends SecureTestUtil {
       }
 
       UserPermission newOwnerperm =
-          new UserPermission(Bytes.toBytes(newOwner.getName()), tableName, null, Action.values());
+          new UserPermission(newOwner.getName(), tableName, Action.values());
       assertTrue("New owner should have all permissions on table",
         hasFoundUserPermission(newOwnerperm, perms));
     } finally {
@@ -1703,12 +1749,10 @@ public class TestAccessController extends SecureTestUtil {
 
     Collection<String> superUsers = Superusers.getSuperUsers();
     List<UserPermission> adminPerms = new ArrayList<>(superUsers.size() + 1);
-    adminPerms.add(new UserPermission(Bytes.toBytes(USER_ADMIN.getShortName()),
-      AccessControlLists.ACL_TABLE_NAME, null, null, Bytes.toBytes("ACRW")));
-
+    adminPerms.add(new UserPermission(USER_ADMIN.getShortName(), Bytes.toBytes("ACRW")));
     for(String user: superUsers) {
-      adminPerms.add(new UserPermission(Bytes.toBytes(user), AccessControlLists.ACL_TABLE_NAME,
-          null, null, Action.values()));
+      // Global permission
+      adminPerms.add(new UserPermission(user, Action.values()));
     }
     assertTrue("Only super users, global users and user admin has permission on table hbase:acl " +
         "per setup", perms.size() == 5 + superUsers.size() &&
@@ -2386,7 +2430,7 @@ public class TestAccessController extends SecureTestUtil {
     verifyAllowed(getAction, testGrantRevoke);
     verifyDenied(putAction, testGrantRevoke);
 
-    // Grant global READ permissions to testGrantRevoke.
+    // Grant global WRITE permissions to testGrantRevoke.
     try {
       grantGlobalUsingAccessControlClient(TEST_UTIL, systemUserConnection, userName,
               Permission.Action.WRITE);
@@ -2711,8 +2755,11 @@ public class TestAccessController extends SecureTestUtil {
       assertTrue(namespacePermissions != null);
       assertEquals(expectedAmount, namespacePermissions.size());
       for (UserPermission namespacePermission : namespacePermissions) {
-        assertFalse(namespacePermission.isGlobal());  // Verify it is not a global user permission
-        assertEquals(expectedNamespace, namespacePermission.getNamespace());  // Verify namespace is set
+        // Verify it is not a global user permission
+        assertFalse(namespacePermission.getAccessScope() == Permission.Scope.GLOBAL);
+        // Verify namespace is set
+        NamespacePermission nsPerm = (NamespacePermission) namespacePermission.getPermission();
+        assertEquals(expectedNamespace, nsPerm.getNamespace());
       }
     } catch (Throwable thw) {
       throw new HBaseException(thw);
@@ -3079,8 +3126,8 @@ public class TestAccessController extends SecureTestUtil {
       Permission.Action[] expectedAction = { Action.READ };
       boolean userFound = false;
       for (UserPermission p : userPermissions) {
-        if (testUserPerms.getShortName().equals(Bytes.toString(p.getUser()))) {
-          assertArrayEquals(expectedAction, p.getActions());
+        if (testUserPerms.getShortName().equals(p.getUser())) {
+          assertArrayEquals(expectedAction, p.getPermission().getActions());
           userFound = true;
           break;
         }
@@ -3547,15 +3594,24 @@ public class TestAccessController extends SecureTestUtil {
     assertEquals(resultCount, userPermissions.size());
 
     for (UserPermission perm : userPermissions) {
-      if (cf != null) {
-        assertTrue(Bytes.equals(cf, perm.getFamily()));
-      }
-      if (cq != null) {
-        assertTrue(Bytes.equals(cq, perm.getQualifier()));
-      }
-      if (userName != null
-          && (superUsers == null || !superUsers.contains(Bytes.toString(perm.getUser())))) {
-        assertTrue(userName.equals(Bytes.toString(perm.getUser())));
+      if (perm.getPermission() instanceof TablePermission) {
+        TablePermission tablePerm = (TablePermission) perm.getPermission();
+        if (cf != null) {
+          assertTrue(Bytes.equals(cf, tablePerm.getFamily()));
+        }
+        if (cq != null) {
+          assertTrue(Bytes.equals(cq, tablePerm.getQualifier()));
+        }
+        if (userName != null
+          && (superUsers == null || !superUsers.contains(perm.getUser()))) {
+          assertTrue(userName.equals(perm.getUser()));
+        }
+      } else if (perm.getPermission() instanceof NamespacePermission ||
+          perm.getPermission() instanceof GlobalPermission) {
+        if (userName != null &&
+          (superUsers == null || !superUsers.contains(perm.getUser()))) {
+          assertTrue(userName.equals(perm.getUser()));
+        }
       }
     }
   }

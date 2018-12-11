@@ -22,6 +22,7 @@ import static org.junit.Assert.assertEquals;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.client.Get;
@@ -63,20 +64,22 @@ public class TestRegionMoveAndAbandon {
   private MiniZooKeeperCluster zkCluster;
   private HRegionServer rs1;
   private HRegionServer rs2;
+  private TableName tableName;
   private RegionInfo regionInfo;
 
   @Before
   public void setup() throws Exception {
     UTIL = new HBaseTestingUtility();
     zkCluster = UTIL.startMiniZKCluster();
-    cluster = UTIL.startMiniHBaseCluster(1, 2);
+    StartMiniClusterOption option = StartMiniClusterOption.builder().numRegionServers(2).build();
+    cluster = UTIL.startMiniHBaseCluster(option);
     rs1 = cluster.getRegionServer(0);
     rs2 = cluster.getRegionServer(1);
     assertEquals(2, cluster.getRegionServerThreads().size());
-    // We'll use hbase:namespace for our testing
-    UTIL.waitTableAvailable(TableName.NAMESPACE_TABLE_NAME, 30_000);
-    regionInfo =
-      Iterables.getOnlyElement(cluster.getRegions(TableName.NAMESPACE_TABLE_NAME)).getRegionInfo();
+    tableName = TableName.valueOf(name.getMethodName());
+    UTIL.createTable(tableName, Bytes.toBytes("cf"));
+    UTIL.waitTableAvailable(tableName, 30_000);
+    regionInfo = Iterables.getOnlyElement(cluster.getRegions(tableName)).getRegionInfo();
   }
 
   @After
@@ -103,7 +106,7 @@ public class TestRegionMoveAndAbandon {
     // Stop RS1
     cluster.killRegionServer(rs1.getServerName());
     // Region should get moved to RS2
-    UTIL.waitTableAvailable(TableName.NAMESPACE_TABLE_NAME, 30_000);
+    UTIL.waitTableAvailable(tableName, 30_000);
     // Restart the master
     LOG.info("Killing master {}", cluster.getMaster().getServerName());
     cluster.killMaster(cluster.getMaster().getServerName());
@@ -118,7 +121,7 @@ public class TestRegionMoveAndAbandon {
     UTIL.waitFor(30_000, new Waiter.Predicate<Exception>() {
       @Override
       public boolean evaluate() throws Exception {
-        try (Table nsTable = UTIL.getConnection().getTable(TableName.NAMESPACE_TABLE_NAME)) {
+        try (Table nsTable = UTIL.getConnection().getTable(tableName)) {
           // Doesn't matter what we're getting. We just want to make sure we can access the region
           nsTable.get(new Get(Bytes.toBytes("a")));
           return true;

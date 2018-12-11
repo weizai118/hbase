@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.TreeSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
@@ -51,6 +52,7 @@ import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.hadoop.hbase.master.TableStateManager;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
+import org.apache.hadoop.hbase.master.assignment.TransitRegionStateProcedure;
 import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
@@ -72,13 +74,13 @@ public class MasterProcedureTestingUtility {
   public static void restartMasterProcedureExecutor(ProcedureExecutor<MasterProcedureEnv> procExec)
       throws Exception {
     final MasterProcedureEnv env = procExec.getEnvironment();
-    final HMaster master = (HMaster)env.getMasterServices();
+    final HMaster master = (HMaster) env.getMasterServices();
     ProcedureTestingUtility.restart(procExec, true, true,
       // stop services
       new Callable<Void>() {
         @Override
         public Void call() throws Exception {
-          final AssignmentManager am = env.getAssignmentManager();
+          AssignmentManager am = env.getAssignmentManager();
           // try to simulate a master restart by removing the ServerManager states about seqIDs
           for (RegionState regionState: am.getRegionStates().getRegionStates()) {
             env.getMasterServices().getServerManager().removeRegion(regionState.getRegion());
@@ -88,14 +90,32 @@ public class MasterProcedureTestingUtility {
           return null;
         }
       },
+      // setup RIT before starting workers
+      new Callable<Void>() {
+
+        @Override
+        public Void call() throws Exception {
+          AssignmentManager am = env.getAssignmentManager();
+          am.start();
+          // just follow the same way with HMaster.finishActiveMasterInitialization. See the
+          // comments there
+          am.setupRIT(procExec.getActiveProceduresNoCopy().stream().filter(p -> !p.isSuccess())
+            .filter(p -> p instanceof TransitRegionStateProcedure)
+            .map(p -> (TransitRegionStateProcedure) p).collect(Collectors.toList()));
+          return null;
+        }
+      },
       // restart services
       new Callable<Void>() {
         @Override
         public Void call() throws Exception {
-          final AssignmentManager am = env.getAssignmentManager();
-          am.start();
-          am.joinCluster();
-          master.setInitialized(true);
+          AssignmentManager am = env.getAssignmentManager();
+          try {
+            am.joinCluster();
+            master.setInitialized(true);
+          } catch (Exception e) {
+            LOG.warn("Failed to load meta", e);
+          }
           return null;
         }
       });
@@ -363,7 +383,7 @@ public class MasterProcedureTestingUtility {
    */
   public static void testRecoveryAndDoubleExecution(
       final ProcedureExecutor<MasterProcedureEnv> procExec, final long procId,
-      final int numSteps, final boolean expectExecRunning) throws Exception {
+      final int lastStep, final boolean expectExecRunning) throws Exception {
     ProcedureTestingUtility.waitProcedure(procExec, procId);
     assertEquals(false, procExec.isRunning());
 
@@ -381,10 +401,13 @@ public class MasterProcedureTestingUtility {
     // fix would be get all visited states by the procedure and then check if user speccified
     // state is in that list. Current assumption of sequential proregression of steps/ states is
     // made at multiple places so we can keep while condition below for simplicity.
-    Procedure proc = procExec.getProcedure(procId);
+    Procedure<?> proc = procExec.getProcedure(procId);
     int stepNum = proc instanceof StateMachineProcedure ?
         ((StateMachineProcedure) proc).getCurrentStateId() : 0;
-    while (stepNum < numSteps) {
+    for (;;) {
+      if (stepNum == lastStep) {
+        break;
+      }
       LOG.info("Restart " + stepNum + " exec state=" + proc);
       ProcedureTestingUtility.assertProcNotYetCompleted(procExec, procId);
       restartMasterProcedureExecutor(procExec);
@@ -491,13 +514,18 @@ public class MasterProcedureTestingUtility {
       // Sometimes there are other procedures still executing (including asynchronously spawned by
       // procId) and due to KillAndToggleBeforeStoreUpdate flag ProcedureExecutor is stopped before
       // store update. Let all pending procedures finish normally.
-      if (!procExec.isRunning()) {
-        LOG.warn("ProcedureExecutor not running, may have been stopped by pending procedure due to"
-            + " KillAndToggleBeforeStoreUpdate flag.");
-        ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, false);
-        restartMasterProcedureExecutor(procExec);
-        ProcedureTestingUtility.waitNoProcedureRunning(procExec);
+      ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, false);
+      // check 3 times to confirm that the procedure executor has not been killed
+      for (int i = 0; i < 3; i++) {
+        if (!procExec.isRunning()) {
+          LOG.warn("ProcedureExecutor not running, may have been stopped by pending procedure due" +
+            " to KillAndToggleBeforeStoreUpdate flag.");
+          restartMasterProcedureExecutor(procExec);
+          break;
+        }
+        Thread.sleep(1000);
       }
+      ProcedureTestingUtility.waitNoProcedureRunning(procExec);
     }
 
     assertEquals(true, procExec.isRunning());

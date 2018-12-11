@@ -226,14 +226,15 @@ public class VisibilityController implements MasterCoprocessor, RegionCoprocesso
   }
 
   @Override
-  public void preModifyTable(ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
-    TableDescriptor currentDescriptor, TableDescriptor newDescriptor) throws IOException {
-    if (!authorizationEnabled) {
-      return;
+  public TableDescriptor preModifyTable(ObserverContext<MasterCoprocessorEnvironment> ctx,
+      TableName tableName, TableDescriptor currentDescriptor, TableDescriptor newDescriptor)
+      throws IOException {
+    if (authorizationEnabled) {
+      if (LABELS_TABLE_NAME.equals(tableName)) {
+        throw new ConstraintException("Cannot alter " + LABELS_TABLE_NAME);
+      }
     }
-    if (LABELS_TABLE_NAME.equals(tableName)) {
-      throw new ConstraintException("Cannot alter " + LABELS_TABLE_NAME);
-    }
+    return newDescriptor;
   }
 
   @Override
@@ -1037,6 +1038,24 @@ public class VisibilityController implements MasterCoprocessor, RegionCoprocesso
           .matchVisibility(putVisTags, putCellVisTagsFormat, deleteCellVisTags,
               deleteCellVisTagsFormat);
       return matchFound ? ReturnCode.INCLUDE : ReturnCode.SKIP;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      if (!(obj instanceof DeleteVersionVisibilityExpressionFilter)) {
+        return false;
+      }
+      if (this == obj){
+        return true;
+      }
+      DeleteVersionVisibilityExpressionFilter f = (DeleteVersionVisibilityExpressionFilter)obj;
+      return this.deleteCellVisTags.equals(f.deleteCellVisTags) &&
+          this.deleteCellVisTagsFormat.equals(f.deleteCellVisTagsFormat);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(this.deleteCellVisTags, this.deleteCellVisTagsFormat);
     }
   }
 

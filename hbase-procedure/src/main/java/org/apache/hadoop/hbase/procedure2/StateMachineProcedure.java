@@ -185,7 +185,7 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
         this.cycles++;
       }
 
-      LOG.trace("{}", toString());
+      LOG.trace("{}", this);
       stateFlow = executeFromState(env, state);
       if (!hasMoreState()) setNextState(EOF_STATE);
       if (subProcList != null && !subProcList.isEmpty()) {
@@ -219,12 +219,16 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
   @Override
   protected boolean abort(final TEnvironment env) {
     LOG.debug("Abort requested for {}", this);
-    if (hasMoreState()) {
-      aborted.set(true);
-      return true;
+    if (!hasMoreState()) {
+      LOG.warn("Ignore abort request on {} because it has already been finished", this);
+      return false;
     }
-    LOG.debug("Ignoring abort request on {}", this);
-    return false;
+    if (!isRollbackSupported(getCurrentState())) {
+      LOG.warn("Ignore abort request on {} because it does not support rollback", this);
+      return false;
+    }
+    aborted.set(true);
+    return true;
   }
 
   /**

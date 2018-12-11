@@ -152,6 +152,7 @@ module Shell
       puts 'HBase Shell'
       puts 'Use "help" to get list of supported commands.'
       puts 'Use "exit" to quit this interactive shell.'
+      puts 'For Reference, please visit: http://hbase.apache.org/book.html#shell'
       print 'Version '
       command('version')
       puts
@@ -360,6 +361,7 @@ Shell.load_command_group(
     clear_block_cache
     stop_master
     stop_regionserver
+    rit
   ],
   # TODO: remove older hlog_roll command
   aliases: {
@@ -450,7 +452,6 @@ Shell.load_command_group(
   'procedures',
   full_name: 'PROCEDURES & LOCKS MANAGEMENT',
   commands: %w[
-    abort_procedure
     list_procedures
     list_locks
   ]

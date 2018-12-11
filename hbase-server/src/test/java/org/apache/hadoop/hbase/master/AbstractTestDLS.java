@@ -55,6 +55,7 @@ import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.SplitLogCounters;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.client.Put;
@@ -66,7 +67,6 @@ import org.apache.hadoop.hbase.coordination.ZKSplitLogManagerCoordination;
 import org.apache.hadoop.hbase.ipc.ServerNotRunningYetException;
 import org.apache.hadoop.hbase.master.SplitLogManager.TaskBatch;
 import org.apache.hadoop.hbase.master.assignment.RegionStates;
-import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl;
 import org.apache.hadoop.hbase.regionserver.Region;
@@ -146,7 +146,9 @@ public abstract class AbstractTestDLS {
     conf.setInt("hbase.regionserver.wal.max.splitters", 3);
     conf.setInt(HConstants.REGION_SERVER_HIGH_PRIORITY_HANDLER_COUNT, 10);
     conf.set("hbase.wal.provider", getWalProvider());
-    TEST_UTIL.startMiniHBaseCluster(NUM_MASTERS, numRS);
+    StartMiniClusterOption option = StartMiniClusterOption.builder()
+        .numMasters(NUM_MASTERS).numRegionServers(numRS).build();
+    TEST_UTIL.startMiniHBaseCluster(option);
     cluster = TEST_UTIL.getHBaseCluster();
     LOG.info("Waiting for active/ready master");
     cluster.waitForActiveAndReadyMaster();
@@ -221,10 +223,11 @@ public abstract class AbstractTestDLS {
 
       int count = 0;
       for (RegionInfo hri : regions) {
-        Path tdir = FSUtils.getTableDir(rootdir, table);
+        Path tdir = FSUtils.getWALTableDir(conf, table);
         @SuppressWarnings("deprecation")
         Path editsdir = WALSplitter
-            .getRegionDirRecoveredEditsDir(HRegion.getRegionDir(tdir, hri.getEncodedName()));
+            .getRegionDirRecoveredEditsDir(FSUtils.getWALRegionDir(conf,
+                tableName, hri.getEncodedName()));
         LOG.debug("checking edits dir " + editsdir);
         FileStatus[] files = fs.listStatus(editsdir, new PathFilter() {
           @Override
@@ -502,19 +505,19 @@ public abstract class AbstractTestDLS {
     LOG.debug("Waiting for no more RIT\n");
     blockUntilNoRIT(zkw, master);
     NavigableSet<String> regions = HBaseTestingUtility.getAllOnlineRegions(cluster);
-    LOG.debug("Verifying only catalog and namespace regions are assigned\n");
-    if (regions.size() != 2) {
+    LOG.debug("Verifying only catalog region is assigned\n");
+    if (regions.size() != 1) {
       for (String oregion : regions)
         LOG.debug("Region still online: " + oregion);
     }
-    assertEquals(2 + existingRegions, regions.size());
+    assertEquals(1 + existingRegions, regions.size());
     LOG.debug("Enabling table\n");
     TEST_UTIL.getAdmin().enableTable(tableName);
     LOG.debug("Waiting for no more RIT\n");
     blockUntilNoRIT(zkw, master);
     LOG.debug("Verifying there are " + numRegions + " assigned on cluster\n");
     regions = HBaseTestingUtility.getAllOnlineRegions(cluster);
-    assertEquals(numRegions + 2 + existingRegions, regions.size());
+    assertEquals(numRegions + 1 + existingRegions, regions.size());
     return table;
   }
 

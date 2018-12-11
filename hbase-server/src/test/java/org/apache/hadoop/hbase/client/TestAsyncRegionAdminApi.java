@@ -17,9 +17,11 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -35,7 +37,6 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.master.HMaster;
-import org.apache.hadoop.hbase.master.NoSuchProcedureException;
 import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.hadoop.hbase.master.ServerManager;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
@@ -83,23 +84,19 @@ public class TestAsyncRegionAdminApi extends TestAsyncAdminBase {
 
     // Region is assigned now. Let's assign it again.
     // Master should not abort, and region should stay assigned.
-    admin.assign(hri.getRegionName()).get();
     try {
-      am.waitForAssignment(hri);
-      fail("Expected NoSuchProcedureException");
-    } catch (NoSuchProcedureException e) {
+      admin.assign(hri.getRegionName()).get();
+      fail("Should fail when assigning an already onlined region");
+    } catch (ExecutionException e) {
       // Expected
+      assertThat(e.getCause(), instanceOf(DoNotRetryRegionException.class));
     }
+    assertFalse(am.getRegionStates().getRegionStateNode(hri).isInTransition());
     assertTrue(regionStates.getRegionState(hri).isOpened());
 
     // unassign region
     admin.unassign(hri.getRegionName(), true).get();
-    try {
-      am.waitForAssignment(hri);
-      fail("Expected NoSuchProcedureException");
-    } catch (NoSuchProcedureException e) {
-      // Expected
-    }
+    assertFalse(am.getRegionStates().getRegionStateNode(hri).isInTransition());
     assertTrue(regionStates.getRegionState(hri).isClosed());
   }
 

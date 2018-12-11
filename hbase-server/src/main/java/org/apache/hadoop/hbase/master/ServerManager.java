@@ -350,10 +350,10 @@ public class ServerManager {
    * <p/>
    * Must be called inside the initialization method of {@code RegionServerTracker} to avoid
    * concurrency issue.
-   * @param deadServersFromPE the region servers which already have SCP associated.
+   * @param deadServersFromPE the region servers which already have a SCP associated.
    * @param liveServersFromWALDir the live region servers from wal directory.
    */
-  void findOutDeadServersAndProcess(Set<ServerName> deadServersFromPE,
+  void findDeadServersAndProcess(Set<ServerName> deadServersFromPE,
       Set<ServerName> liveServersFromWALDir) {
     deadServersFromPE.forEach(deadservers::add);
     liveServersFromWALDir.stream().filter(sn -> !onlineServers.containsKey(sn))
@@ -621,7 +621,7 @@ public class ServerManager {
   public void moveFromOnlineToDeadServers(final ServerName sn) {
     synchronized (onlineServers) {
       if (!this.onlineServers.containsKey(sn)) {
-        LOG.warn("Expiration of " + sn + " but server not online");
+        LOG.trace("Expiration of {} but server not online", sn);
       }
       // Remove the server from the known servers lists and update load info BUT
       // add to deadservers first; do this so it'll show in dead servers list if
@@ -761,19 +761,22 @@ public class ServerManager {
    * RegionServers to check-in.
    */
   private int getMinToStart() {
-    // One server should be enough to get us off the ground.
-    int requiredMinToStart = 1;
-    if (LoadBalancer.isTablesOnMaster(master.getConfiguration())) {
-      if (LoadBalancer.isSystemTablesOnlyOnMaster(master.getConfiguration())) {
-        // If Master is carrying regions but NOT user-space regions, it
-        // still shows as a 'server'. We need at least one more server to check
-        // in before we can start up so set defaultMinToStart to 2.
-        requiredMinToStart = requiredMinToStart + 1;
-      }
+    if (master.isInMaintenanceMode()) {
+      // If in maintenance mode, then master hosting meta will be the only server available
+      return 1;
     }
+
+    int minimumRequired = 1;
+    if (LoadBalancer.isTablesOnMaster(master.getConfiguration()) &&
+        LoadBalancer.isSystemTablesOnlyOnMaster(master.getConfiguration())) {
+      // If Master is carrying regions it will show up as a 'server', but is not handling user-
+      // space regions, so we need a second server.
+      minimumRequired = 2;
+    }
+
     int minToStart = this.master.getConfiguration().getInt(WAIT_ON_REGIONSERVERS_MINTOSTART, -1);
-    // Ensure we are never less than requiredMinToStart else stuff won't work.
-    return minToStart == -1 || minToStart < requiredMinToStart? requiredMinToStart: minToStart;
+    // Ensure we are never less than minimumRequired else stuff won't work.
+    return Math.max(minToStart, minimumRequired);
   }
 
   /**

@@ -58,8 +58,8 @@ public class TestGlobalMemStoreSize {
   private static final Logger LOG = LoggerFactory.getLogger(TestGlobalMemStoreSize.class);
   private static int regionServerNum = 4;
   private static int regionNum = 16;
-  // total region num = region num + root and meta regions
-  private static int totalRegionNum = regionNum+2;
+  // total region num = region num + meta regions
+  private static int totalRegionNum = regionNum + 1;
 
   private HBaseTestingUtility TEST_UTIL;
   private MiniHBaseCluster cluster;
@@ -78,7 +78,7 @@ public class TestGlobalMemStoreSize {
     LOG.info("Starting cluster");
     Configuration conf = HBaseConfiguration.create();
     TEST_UTIL = new HBaseTestingUtility(conf);
-    TEST_UTIL.startMiniCluster(1, regionServerNum);
+    TEST_UTIL.startMiniCluster(regionServerNum);
     cluster = TEST_UTIL.getHBaseCluster();
     LOG.info("Waiting for active/ready master");
     cluster.waitForActiveAndReadyMaster();

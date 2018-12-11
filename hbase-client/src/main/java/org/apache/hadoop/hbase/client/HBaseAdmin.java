@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -230,7 +231,6 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
  * @see Admin
  */
 @InterfaceAudience.Private
-@InterfaceStability.Evolving
 public class HBaseAdmin implements Admin {
   private static final Logger LOG = LoggerFactory.getLogger(HBaseAdmin.class);
 
@@ -3310,9 +3310,16 @@ public class HBaseAdmin implements Admin {
   @Override
   public CompactionState getCompactionState(final TableName tableName, CompactType compactType)
       throws IOException {
+    checkTableExists(tableName);
+    if (!isTableEnabled(tableName)) {
+      // If the table is disabled, the compaction state of the table should always be NONE
+      return ProtobufUtil.createCompactionState(
+        AdminProtos.GetRegionInfoResponse.CompactionState.NONE);
+    }
+
     AdminProtos.GetRegionInfoResponse.CompactionState state =
       AdminProtos.GetRegionInfoResponse.CompactionState.NONE;
-    checkTableExists(tableName);
+
     // TODO: There is no timeout on this controller. Set one!
     HBaseRpcController rpcController = rpcControllerFactory.newController();
     switch (compactType) {
@@ -4307,15 +4314,13 @@ public class HBaseAdmin implements Admin {
   }
 
   @Override
-  public List<ServerName> clearDeadServers(final List<ServerName> servers) throws IOException {
-    if (servers == null || servers.size() == 0) {
-      throw new IllegalArgumentException("servers cannot be null or empty");
-    }
+  public List<ServerName> clearDeadServers(List<ServerName> servers) throws IOException {
     return executeCallable(new MasterCallable<List<ServerName>>(getConnection(),
             getRpcControllerFactory()) {
       @Override
       protected List<ServerName> rpcCall() throws Exception {
-        ClearDeadServersRequest req = RequestConverter.buildClearDeadServersRequest(servers);
+        ClearDeadServersRequest req = RequestConverter.
+          buildClearDeadServersRequest(servers == null? Collections.EMPTY_LIST: servers);
         return ProtobufUtil.toServerNameList(
                 master.clearDeadServers(getRpcController(), req).getServerNameList());
       }
